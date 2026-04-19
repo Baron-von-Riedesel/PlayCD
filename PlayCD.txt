@@ -1,0 +1,7 @@
+
+ 1. About PlayCD
+
+   PlayCD is a CD player for DOS. To play sounds, it emits the "PLAY CD"
+  command to the CD driver. This only works if the CD drive is connected
+  with the sound card. The CPU isn't involved in the sound rendering.
+

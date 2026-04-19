@@ -1,0 +1,21 @@
+
+ 1. About SB16CD
+
+   SB16CD is a digital CD player for DOS. To play sounds, it will read
+  audio tracks of a CD and copy the data to the sound buffer of the
+  sound card.
+   SB16CD expects to find a SoundBlaster 16 compatible sound card - it
+  plays sound with 44.100 Hz, 16-bit and 2 channels.
+
+
+ 2. Usage
+
+  SB16CD has a few command line options:
+
+   -? :          display help
+   -q :          be quiet
+   -d:<driver>   call the CD-ROM driver directly, don't use MSCDEX/SHSUCDX
+
+  If MSCDEX is used, ensure that CD-ROM access is NOT cached by SmartDrive -
+  caching the audio data would require too much time, resulting in distorted
+  playback.
