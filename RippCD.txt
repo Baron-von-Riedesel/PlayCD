@@ -1,0 +1,17 @@
+
+ 1. About RippCD
+
+   RippCD reads CD data and writes it to a .wav file.
+
+
+ 2. Usage
+
+  RippCD [ options ] [track# ...]
+
+  options are:
+
+   -?                  display help
+   -d:drvname[,unit]   call the CD-ROM driver directly, don't use MSCDEX/SHSUCDX
+   -q                  be quiet
+   -s                  write all tracks into a single file
+

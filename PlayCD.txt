@@ -5,3 +5,13 @@
   command to the CD driver. This only works if the CD drive is connected
   with the sound card. The CPU isn't involved in the sound rendering.
 
+
+ 2. Usage
+
+   PlayCD [ options ] [track#]
+
+   options are:
+   
+   -b         ignore busy flag
+   -n         don't wait for Play CD command to finish
+   -s         stop playing ( if -n was used )

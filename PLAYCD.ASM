@@ -13,12 +13,15 @@
 ;***   jwlink format dos file playcd.obj
 
 	.286
-	.model small
+	.model tiny
+	.stack 800h
 	.dosseg
 	.386
 
 cr	equ 13
 lf	equ 10
+
+VERSION textequ <"1.1">
 
 ;--- CStr(): macro to define a string constant
 
@@ -111,31 +114,26 @@ cmd     db ?
 sectors dd ?	;size in sectors
 ioctl08 ends
 
+RBITEM union
+        dd ?
+struct
+_f      db ?
+_s      db ?
+_m      db ?
+ends
+RBITEM ends
+
 ioctl10 struct	;audio disk info
 cmd     db ?
 first   db ?
 last    db ?
-union
-leadout dd ?
-struct
-leadout_f db ?
-leadout_s db ?
-leadout_m db ?
-ends
-ends
+leadout RBITEM <?>
 ioctl10 ends
 
 ioctl11 struct	;audio track info
 cmd     db ?
 track   db ?
-union
-start   dd ?
-struct
-start_f db ?
-start_s db ?
-start_m db ?
-ends
-ends
+start   RBITEM <?>
 ctlinfo db ?
 ioctl11 ends
 
@@ -167,22 +165,8 @@ ioctl14 ends
 ioctl15 struct	;audio status
 cmd     DB ?
 status  DW ?         ; status bits
-union
-startl  DD ?         ; start for next resume
-struct
-startl_f DB ?
-startl_s DB ?
-startl_m DB ?
-ends
-ends
-union
-endl    DD ?         ; end for next resume
-struct
-endl_f  DB ?
-endl_s  DB ?
-endl_m  DB ?
-ends
-ends
+startl  RBITEM <?>   ; start for next resume
+endl    RBITEM <?>   ; end for next resume
 ioctl15 ends
 
 cmd84   struct      ;play audio
@@ -379,12 +363,13 @@ local	endtrack:byte
 
 	call getparam
 	jnc @F
-	invoke printf, CStr("usage: PLAYCD [ options ] <trackno>",lf,"options are:",lf)
+	invoke printf, CStr("PlayCD v",VERSION,", Public Domain",lf)
+	invoke printf, CStr("usage: PlayCD [ options ] [track#]",lf,"options are:",lf)
 	invoke printf, CStr("    -b: ignore busy flag (use ESC to stop!)",lf)
 	invoke printf, CStr("    -n: don't wait for play audio command to finish",lf)
 	invoke printf, CStr("    -s: stop playing audio",lf)
-	invoke printf, CStr("   if <trackno> isn't specified, all tracks are played",lf)
-	jmp exit
+	invoke printf, CStr("   if no track# is specified, all audio tracks are played",lf)
+	jmp exit2
 @@:
 ;--- call MSCDEX to see if there's a CD/DVD at all
 	mov ax, 1500h
@@ -393,7 +378,7 @@ local	endtrack:byte
 	cmp bx, 0000
 	jnz @F
 	invoke printf, CStr("no CD-ROM drive found",lf)
-	jmp exit
+	jmp exit2
 @@:
 	mov drive, cx
 
@@ -408,7 +393,7 @@ local	endtrack:byte
 	invoke SendReq, addr req03
 	jnc @F
 	invoke printf, CStr("IOCTL audio channel info call failed [%X]",lf), ax
-	jmp exit
+	jmp exit2
 @@:
 	invoke printf, CStr("IOCTL audio channel info [%X]: ch0=%02X/%02X ch1=%02X/%02X ch2=%02X/%02X ch3=%02X/%02X",lf),
 		req03.status, ioc04.ich0, ioc04.vol0, ioc04.ich1, ioc04.vol1, ioc04.ich2, ioc04.vol2, ioc04.ich3, ioc04.vol3
@@ -471,7 +456,7 @@ novolsize:
 	invoke printf, CStr("IOCTL disk info call failed [%X]",lf), ax
 	jmp exit
 @@:
-	invoke printf, CStr("IOCTL disk info [%X]: tracks %u-%u, leadout=%02u:%02u:%02u",lf), req03.status, ioc10.first, ioc10.last, ioc10.leadout_m, ioc10.leadout_s, ioc10.leadout_f
+	invoke printf, CStr("IOCTL disk info [%X]: tracks %u-%u, leadout=%02u:%02u:%02u",lf), req03.status, ioc10.first, ioc10.last, ioc10.leadout._m, ioc10.leadout._s, ioc10.leadout._f
 	mov eax, ioc10.leadout
 	mov endRB, eax
 	test req03.status, 8000h
@@ -534,8 +519,8 @@ noupc:
 @@:
 	invoke printf, CStr("IOCTL audio status [%X]: status=%04X start=%02u:%02u:%02u end=%02u:%02u:%02u",lf),
 		req03.status, ioc15.status,
-		ioc15.startl_m, ioc15.startl_s, ioc15.startl_f,
-		ioc15.endl_m, ioc15.endl_s, ioc15.endl_f
+		ioc15.startl._m, ioc15.startl._s, ioc15.startl._f,
+		ioc15.endl._m, ioc15.endl._s, ioc15.endl._f
 noaustat:
 
 ;--- get info for first track to be played, set startRB value
@@ -550,7 +535,7 @@ noaustat:
 	invoke printf, CStr("IOCTL track %u info call failed [%X]",lf), starttrack, ax
 	jmp exit
 @@:
-	invoke printf, CStr("IOCTL track %u info [%X]: start=%02u:%02u:%02u, ctlinfo=%X",lf), starttrack, req03.status, ioc11.start_m, ioc11.start_s, ioc11.start_f, ioc11.ctlinfo
+	invoke printf, CStr("IOCTL track %u info [%X]: start=%02u:%02u:%02u, ctlinfo=%X",lf), starttrack, req03.status, ioc11.start._m, ioc11.start._s, ioc11.start._f, ioc11.ctlinfo
 	test req03.status, 8000h
 	jnz exit
 ;--- usually a cd starts at 00:02:00 (redbook), but we play it safe
@@ -584,7 +569,7 @@ noaustat:
 	invoke printf, CStr("IOCTL track %u info call failed [%X]",lf), ioc11.track, ax
 	jmp exit
 @@:
-	invoke printf, CStr("IOCTL track %u info [%X]: start=%02u:%02u:%02u, ctlinfo=%X",lf), ioc11.track, req03.status, ioc11.start_m, ioc11.start_s, ioc11.start_f, ioc11.ctlinfo
+	invoke printf, CStr("IOCTL track %u info [%X]: start=%02u:%02u:%02u, ctlinfo=%X",lf), ioc11.track, req03.status, ioc11.start._m, ioc11.start._s, ioc11.start._f, ioc11.ctlinfo
 	test req03.status, 8000h
 	jnz exit
 	mov eax,ioc11.start
@@ -612,9 +597,11 @@ islasttrack:
 	invoke SendReq, addr req84
 	jnc @F
 	invoke printf, CStr("Play Audio failed [%X]",lf), req84.status
-	jmp exit
+	jmp exit2
 @@:
 	invoke printf, CStr("Play Audio [%X]",lf), req84.status
+	test req84.status, 8000h
+	jnz exit2
 
 	test bOption, OPT_NOWAIT
 	jnz exit
@@ -683,6 +670,7 @@ nextcnt:
 	inc di
 	cmp di, 16
 	jb nextcnt
+exit2:
 	ret
 gettick:
 	push ds
@@ -695,10 +683,10 @@ gettick:
 main endp
 
 ;--- init code.
-;--- to set the "small" memory model, register SS must equal DS (=DGROUP)
+;--- to set the tiny memory model, CS, DS and SS must be equal
 
 start:
-	mov ax, @data
+	mov ax, cs
 	mov ds, ax
 	mov bx, ss
 	sub bx, ax
@@ -708,7 +696,5 @@ start:
 	call main
 	mov ax,4c00h
 	int 21h
-
-	.stack 800h
 
 	END start

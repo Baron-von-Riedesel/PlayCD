@@ -10,11 +10,13 @@
 
  2. Usage
 
-  SB16CD has a few command line options:
+  SB16CD [ options ] [track# ...]
 
-   -? :          display help
-   -q :          be quiet
-   -d:<driver>   call the CD-ROM driver directly, don't use MSCDEX/SHSUCDX
+  options are:
+
+   -?                  display help
+   -d:drvname[,unit]   call the CD-ROM driver directly, don't use MSCDEX/SHSUCDX
+   -q                  suppress status displays
 
   If MSCDEX is used, ensure that CD-ROM access is NOT cached by SmartDrive -
   caching the audio data would require too much time, resulting in distorted

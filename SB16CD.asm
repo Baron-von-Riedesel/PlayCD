@@ -11,7 +11,9 @@
 	.386
 
 ?SECSIZE equ 2352	;raw mode sector size
-?DRIVER  equ 1		;support /D:xxx
+?DRIVER  equ 1		;1=support /D:xxx
+
+VERSION textequ <"1.0">
 
 ;--- output buffer (=sample buffer) must fit in 64 kB:
 ;--- 65536 / 2352 = max 27 sectors;
@@ -37,7 +39,7 @@ SBIRQ		EQU 5		; IRQ
 DMALOW		EQU 1		; DMA channel
 DMAHIGH 	EQU 5		; HDMA channel
 
-MAXTRKS  equ 64
+MAXTRKS  equ 64	;max tracks - must be a multiple of 16
 
 nSamplesPerSec equ 44100
 wBitsPerSample equ 16
@@ -170,7 +172,7 @@ endm
 OldIntSB	dd 0	;old value of SB IRQ
 OldInt15 dd 0	;old value of Int 15h
 dwSampleBuffer	dd 0; linear address sample buffer
-wData		dw 0,0 ;track type bits
+wData		dw MAXTRKS shr 4 dup (0) ;track type bits
 
 wBase	dw BASEADDR
 wIrq	dw SBIRQ
@@ -186,6 +188,7 @@ bPaused	db 0
 bExit	db 0
 if ?DRIVER
 drvname db 8 dup (' '),0
+bUnit   db 0
 	align word
 drvstr  dd 0
 drvint  dd 0
@@ -200,7 +203,13 @@ wDmaWriteMask dw 0
 wDmaWriteMode dw 0
 wDmaClearFlipFlop dw 0
 wDrive dw 0		; CD drive #
+if (INBUFSIZE / ?SECSIZE) GT 0ffffh
+wSecsInBuf dd 0	; current sectors in read buffer
+FMTSIB textequ <"lu">
+else
 wSecsInBuf dw 0	; current sectors in read buffer
+FMTSIB textequ <"u">
+endif
 
 xmsdrv  dd 0	; XMS driver entry
 xmswrite XMSBM <SAMPLEBUFFERLENGTH / ?BUFFERS,0,0,0,0>
@@ -213,14 +222,14 @@ req80   cmd80 <>	;read long
 pgtab db 87h, 83h, 81h, 82h, -1, 8bh, 89h, 8ah
 
 szHelp label byte
-	db PGMNAME," - read Audio CD data and send it to the SB16.",lf
-	db "Usage: ",PGMNAME," [options] [track#]",lf
+	db PGMNAME," v", VERSION, " - read Audio CD data and send it to the SB16.",lf
+	db "Usage: ",PGMNAME," [options] [track# ...]",lf
 	db " options:",lf
 	db " -? : this help",lf
 if ?DRIVER
-	db " -d:devname : call CD-ROM driver directly",lf
+	db " -d:drvname[,unit] : call CD-ROM driver directly",lf
 endif
-	db " -q : be quiet",lf
+	db " -q : no displays",lf
 	db "If track# is omitted, all tracks are rendered.",lf
 	db "ESC exits playing, SPACE pauses.",lf
 	db 0
@@ -443,12 +452,13 @@ ScanBlasterVar endp
 SendReq proc stdcall uses bx req:ptr BYTE
 
 	mov bx,req
-	mov [bx].reqhdr.subunit, 0
 	push ds
 	pop es
 if ?DRIVER
 	cmp word ptr drvint+2,0
 	jz @F
+	mov al, bUnit
+	mov [bx].reqhdr.subunit, al
 	call [drvstr]
 	call [drvint]
 	ret
@@ -1030,8 +1040,23 @@ nextchr:
 @@:
 	stosb
 	lodsb
+	cmp al,','
+	jz getunit
 	and al,al
 	loopnz nextchr
+	ret
+getunit:
+	lodsb
+	cmp al,'0'
+	jb error
+	cmp al,'9'
+	ja error
+	sub al,'0'
+	mov bUnit, al
+	clc
+	ret
+error:
+	stc
 	ret
 getdrvname endp
 endif
@@ -1142,6 +1167,9 @@ if ?DRIVER
 			.elseif ah == 'd' && byte ptr [si] == ':' && byte ptr [si+1] > ' '
 				inc si   ;skip the ':'
 				call getdrvname
+				.if CARRY?
+					mov bHelp, 1
+				.endif
 endif
 			.else
 				mov bHelp, 1
@@ -1274,16 +1302,21 @@ endif
 	.endif
 
 	invoke getdiskinfo
-	.if !CARRY?
+	.if !CARRY? && ah >= al
 		mov first, al
-		.if ah <= MAXTRKS
+		mov leadout, edx
+		mov cl, ah
+		sub cl, al
+		inc cl
+		.if cl <= MAXTRKS
 			mov last, ah
 		.else
-			mov last, MAXTRKS
+			add al, MAXTRKS
+			mov last, al
+			invoke printf, CStr("IOCTL disk info: tracks > %u, will be skipped",lf), MAXTRKS
 		.endif
-		mov leadout, edx
 		.if bVerbose
-			mov eax, edx
+			mov eax, leadout
 			call Rb2Lba
 			mov edx, eax
 			invoke printf, CStr("IOCTL disk info: tracks=%u-%u, leadout=%lu (%02u:%02u:%02u)",lf),
@@ -1321,11 +1354,11 @@ endif
 		push ds
 		pop es
 		lea di, trks
+		lea cx, trks+MAXTRKS
 		mov al, first
 @@:
 		stosb
 		inc al
-		lea cx, trks+MAXTRKS
 		cmp di, cx
 		jz @F
 		cmp al, last
@@ -1349,6 +1382,10 @@ endif
 			.if bx
 				dec bx
 				lodsb
+				.if al < first || al > last
+					invoke printf, CStr("IOCTL track info(%u): track invalid, skipped",lf), byte ptr [si-1]
+					.continue
+				.endif                
 				sub al, first
 				movzx di, al
 				shl di, 2
@@ -1388,7 +1425,7 @@ endif
 				sub eax, dwTimer
 				.if eax >= 5
 					add dwTimer, eax
-					invoke printf, CStr("curr sector: %6lu [%3u]",13), req80.stasecs, wSecsInBuf
+					invoke printf, CStr("curr sector: %6lu [%3",FMTSIB,"]",13), req80.stasecs, wSecsInBuf
 				.endif
 			.endif
 		.endif
