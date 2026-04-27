@@ -1,5 +1,5 @@
 
-;--- rip Audio CDs.
+;--- rip Audio and Mixed Mode CDs.
 ;--- Public Domain, written by Andreas Grech.
 
 	.286
@@ -12,6 +12,7 @@
 
 ?SECSIZE equ 2352	;raw mode sector size
 ?DRIVER  equ 1		;1=support /D:xxx
+?CUE     equ 1		;1=support /C (write a .cue file)
 
 VERSION  textequ <"1.0">
 
@@ -137,10 +138,16 @@ endm
 OldInt15 dd 0	;old value of Int 15h
 wData    dw MAXTRKS shr 4 dup (0) ;track type bits
 
-bVerbose db 1
-bHelp   db 0
-bExit   db 0
-bSingle db 0
+bVerbose db 1	;0=/q option active
+bHelp   db 0	;1=/? option active
+bExit   db 0	;1=ESC pressed
+bSingle db 0	;1=single file mode
+if ?CUE
+bCue    db 0	;1=create cue sheet
+endif
+bData   db 0	;1=current track is data
+bError  db 0	;1=stop at cd read errors
+cntData db 0	;# of data tracks written
 if ?DRIVER
 drvname db 8 dup (' '),0
 bUnit   db 0
@@ -152,32 +159,36 @@ endif
 	align word
 
 wDrive dw 0		; CD drive #
-pFN    dw offset szDefFN
+pFN    dw offset szDefFNm
 req03   cmd03 <>	;ioctl
 req80   cmd80 <>	;read long
 
 	.const
 
 szHelp label byte
-	db PGMNAME," v",VERSION," - read Audio CD data and write it to a file.",lf
+	db PGMNAME," v",VERSION," - read (audio) CD data and write it to a file.",lf
 	db "Usage: ",PGMNAME," [options] [track# ...]",lf
 	db " options:",lf
 	db " -? : this help",lf
+	db " -c : write cue sheet",lf
 if ?DRIVER
-	db " -d:drvname[,unit] : call CD-ROM driver directly",lf
+	db " -d:drvname[,unit] : call optical driver directly",lf
 endif
+	db " -e : stop at read errors",lf
 	db " -o:prefix : set prefix for output filename(s)",lf
 	db " -q : no status displays",lf
-	db " -s : single output file",lf
+	db " -s : write all tracks in one file",lf
 	db "If track# is omitted, all tracks are ripped.",lf
-	db "Default for prefix of output filename(s) is '~TRK'",lf
+	db "Defaults for prefix is '~TRK' & '~CD' (for -s)",lf
 	db "ESC terminates prematurely.",lf
 	db 0
-szDefFN db "~TRK",0
+szDefFNm db "~TRK",0
+szDefFNs db "~CD",0
 
 	.code
 
 	include printf.inc
+	include vsprintf.inc
 
 ;--- convert string to number
 ;--- si:src text
@@ -378,10 +389,28 @@ exit:
 	clc
 	ret
 error:
+	movzx eax, req80.numsecs
+	add req80.stasecs, eax
 	invoke printf, CStr("Read long(%lu): failed [%X]",lf), req80.stasecs, req80.status
 	stc
 	ret
 cdread endp
+
+;--- convert LBA address in EAX to RB
+
+Lba2RB proc uses bx
+	cdq
+	mov ecx, 75
+	div ecx
+	mov bl, dl
+	cdq
+	mov ecx, 60
+	div ecx
+	mov bh, dl
+	shl eax, 16
+	mov ax, bx
+	ret
+Lba2RB endp
 
 ;--- convert redbook address in EAX to LBA
 
@@ -429,7 +458,7 @@ gettimer endp
 
 if ?DRIVER
 
-;--- store CD-ROM driver name
+;--- store optical driver name
 
 getdrvname proc uses di
 	mov di, offset drvname
@@ -501,13 +530,19 @@ CreateFile proc stdcall uses bx si di pPrefix:ptr, trackno:byte
 local szFN[256]:byte
 
 	invoke strcpy, addr szFN, pPrefix
-	lea bx, szFN
-	.while byte ptr [bx]
-		inc bx
+	lea di, szFN
+	.while byte ptr [di]
+		inc di
 	.endw
-	invoke itoa, bx, trackno
-	mov di, ax
-	mov si, CStr(".wav")
+	.if !bSingle
+		invoke itoa, di, trackno
+		mov di, ax
+	.endif
+	.if bData
+		mov si, CStr(".bin")
+    .else
+		mov si, CStr(".wav")
+    .endif
 	mov cx, 5
 	rep movsb
 
@@ -526,12 +561,14 @@ local szFN[256]:byte
 		jc error1
 	.endif
 @@:
-	mov bx, ax
-	mov dx, sizeof RIFFHDR + sizeof WAVEFMT + sizeof RIFFCHKHDR
-	mov cx, 0
-	mov ax, 4200h
-	int 21h
-	mov ax, bx
+	.if !bData
+		mov bx, ax
+		mov dx, sizeof RIFFHDR + sizeof WAVEFMT + sizeof RIFFCHKHDR
+		mov cx, 0
+		mov ax, 4200h
+		int 21h
+		mov ax, bx
+	.endif
 	ret
 error1:
 	invoke printf, CStr("create file failed",lf)
@@ -541,34 +578,36 @@ CreateFile endp
 
 CloseFile proc stdcall uses bx si hFile:word, priffhdr:ptr, pwavefmt:ptr, pdatahdr:ptr
 
-	mov bx, hFile
-	mov cx, 0
-	mov dx, 0
-	mov ax, 4200h
-	int 21h
+	.if !bData
+		mov bx, hFile
+		mov cx, 0
+		mov dx, 0
+		mov ax, 4200h
+		int 21h
 
-	mov si, pdatahdr
-	mov eax, [si].RIFFCHKHDR.subchkSiz
-	mov si, priffhdr
-	add [si].RIFFHDR.chkSiz, eax
+		mov si, pdatahdr
+		mov eax, [si].RIFFCHKHDR.subchkSiz
+		mov si, priffhdr
+		add [si].RIFFHDR.chkSiz, eax
 
-	mov dx, si
-	mov cx, sizeof RIFFHDR
-	mov ah, 40h
-	int 21h
-	jc error2
+		mov dx, si
+		mov cx, sizeof RIFFHDR
+		mov ah, 40h
+		int 21h
+		jc error2
 
-	mov dx, pwavefmt
-	mov cx, sizeof WAVEFMT
-	mov ah, 40h
-	int 21h
-	jc error2
+		mov dx, pwavefmt
+		mov cx, sizeof WAVEFMT
+		mov ah, 40h
+		int 21h
+		jc error2
 
-	mov dx, pdatahdr
-	mov cx, sizeof RIFFCHKHDR
-	mov ah, 40h
-	int 21h
-	jc error2
+		mov dx, pdatahdr
+		mov cx, sizeof RIFFCHKHDR
+		mov ah, 40h
+		int 21h
+		jc error2
+	.endif
 
 	mov bx, hFile
 	mov ah, 3Eh
@@ -603,6 +642,130 @@ error2:
 	stc
 	ret
 writeData endp
+
+if ?CUE
+
+sprintf proc c pBuffer:ptr, pFmt:ptr, args:vararg
+
+	invoke vsprintf, pBuffer, pFmt, addr args
+	ret
+
+sprintf endp
+
+;--- track# in cue sheet must start with 1 and be consecutive
+
+writecue proc stdcall uses bx si di tracks:byte, pTracks:ptr, pSectors:ptr
+
+local rb:REDBOOK
+local pExt:word
+local start:dword
+local hFile:word
+local curTrk:word
+local szFN[256]:byte
+
+	cmp tracks, 0
+	jz exit
+	mov si, pFN
+	lea di, szFN
+@@:
+	lodsb
+	stosb
+	and al,al
+	jnz @B
+	dec di
+	mov pExt, di
+	mov eax,"euc."
+	stosd
+	mov al,0
+	stosb
+	mov bx, 2001h  ;access mode & sharing - 2001=write only, no int 24h
+	mov cx, 0      ;attributes - 0=normal file
+	mov dx, 12h    ;action - b4=create, b1=truncate -> create always
+	lea si, szFN
+	mov di, 0      ;alias hint
+	mov ax,716Ch
+	stc
+	int 21h
+	jnc @F
+	.if ax == 7100h
+		mov ax,6c00h
+		int 21h
+		jc error1
+	.endif
+@@:
+	mov hFile, ax
+	.if bSingle
+		lea si, szFN
+		call writefileline
+	.endif
+
+	mov si, pTracks
+	mov di, pSectors
+	mov curTrk, 1
+	.while tracks
+		lodsb
+		push si
+		lea si, szFN
+		.if !bSingle
+			push ax
+			call writefileline2
+			pop ax
+		.endif
+		.if al == -1
+			mov dx, CStr("MODE1/2352")
+		.else
+			mov dx, CStr("AUDIO")
+		.endif
+		invoke sprintf, si, CStr(" TRACK %02u %s",13,10), curTrk, dx
+		call writeline
+		mov eax, [di]
+		.if curTrk == 1 || !bSingle
+			mov start, eax
+		.endif
+		sub eax, start
+		call Lba2RB
+		mov rb, eax
+		lea si, szFN
+		invoke sprintf, si, CStr(" INDEX 01 %02u:%02u:%02u",13,10), rb._m, rb._s, rb._f
+		call writeline
+		pop si
+		inc curTrk
+		add di, sizeof dword
+		dec tracks
+	.endw
+	mov bx, hFile
+	mov ah, 3Eh
+	int 21h
+exit:
+	ret
+error1:
+	invoke printf, CStr("create CUE file failed",lf)
+	ret
+writeline:
+	mov cx, ax
+	mov bx, hFile
+	mov dx, si
+	mov ah, 40h
+	int 21h
+	retn
+writefileline:
+	.if cntData
+		invoke sprintf, si, CStr('FILE "%s.bin" BINARY',13,10), pFN
+	.else
+		invoke sprintf, si, CStr('FILE "%s.wav" WAVE',13,10), pFN
+	.endif
+	call writeline
+	retn
+writefileline2:
+	.if al == -1
+		invoke sprintf, si, CStr('FILE "%s%u.bin" BINARY',13,10), pFN, curTrk
+	.else
+		invoke sprintf, si, CStr('FILE "%s%u.wav" WAVE',13,10), pFN, curTrk
+	.endif
+	call writeline
+	retn
+writecue endp
+endif
 
 	assume ds:nothing,ss:nothing
 
@@ -674,7 +837,7 @@ local wavehdr:WAVEHDR
 		mov si, [bx]
 		add bx, 2
 		lodsw
-		.if al >= '0' && al <= '9'
+		.if al > '0' && al <= '9'
 			sub si,2
 			mov cl,10
 			call atoi
@@ -690,6 +853,12 @@ local wavehdr:WAVEHDR
 				mov bVerbose, 0
 			.elseif ah == 's'
 				mov bSingle, 1
+if ?CUE
+			.elseif ah == 'c'
+				mov bCue, 1
+endif
+			.elseif ah == 'e'
+				mov bError, 1
 if ?DRIVER
 			.elseif ah == 'd' && byte ptr [si] == ':' && byte ptr [si+1] > ' '
 				inc si   ;skip the ':'
@@ -714,6 +883,9 @@ endif
 	invoke printf, CStr("%s"), offset szHelp
 	jmp exit
 @@:
+	.if bSingle && pFN == offset szDefFNm
+		mov pFN, offset szDefFNs
+	.endif
 
 if ?DRIVER
 	.if drvname[0] > ' '
@@ -748,14 +920,14 @@ skipdev:
 	.endif
 endif
 
-;--- CD-ROM installed?
+;--- CD-ROM extensions installed?
 
 	mov ax,1500h
 	mov bx,0000
 	int 2Fh
 	cmp bx,0000
 	jnz @F
-	invoke printf, CStr("no CD-ROM drive found",lf)
+	invoke printf, CStr("no optical drive found",lf)
 	jmp exit
 @@:
 	mov wDrive, cx
@@ -834,8 +1006,7 @@ skipcdrchk:
 	call Rb2Lba   ; convert RedBook in EAX to LBA
 	stosd
 
-
-;--- if no track given, play the full CD
+;--- if no track given, ripp the full CD
 	.if !cnttrk
 		push ds
 		pop es
@@ -895,8 +1066,19 @@ skipcdrchk:
 					.if bVerbose
 						invoke printf, CStr("IOCTL track info(%u): data track",lf), byte ptr [si-1]
 					.endif
-					mov dwSectors, 0
-					.continue
+					mov bData, 1
+					mov byte ptr [si-1],-1
+					inc cntData
+if ?CUE
+					.if !bCue
+endif
+						mov dwSectors, 0
+						.continue
+if ?CUE
+					.endif
+endif
+				.else
+					mov bData, 0
 				.endif
 			.else
 				.break
@@ -904,7 +1086,10 @@ skipcdrchk:
 		.endif
 
 		invoke cdread, dwSectors
-		jc exit
+		.if CARRY?
+			cmp bError, 0
+			jnz exit
+		.endif
 		.if bVerbose
 			call gettimer
 			sub eax, dwTimer
@@ -945,9 +1130,17 @@ skipcdrchk:
 	.endif
 exit:
 	.if hFile != -1
+		.if bSingle && cntData ;option -s set and any data track found?
+			mov bData, 1       ;then ensure that no .wav header is written
+		.endif
 		invoke CloseFile, hFile, addr wavehdr.rh, addr wavehdr.wf, addr wavehdr.rch
 		mov hFile, -1
 	.endif
+if ?CUE
+	.if bCue
+		invoke writecue, cnttrk, addr trks, addr szVar
+	.endif
+endif
 	push ds
 	lds dx,[OldInt15]
 	mov ax,2515h

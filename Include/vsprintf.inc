@@ -1,63 +1,18 @@
 
-;--- simple printf() implementation
+;--- simple vsprintf() implementation
+;--- ds,es=dgroup
 
-ASYNCDISPSTAT equ 0
+vsprintf PROC c uses si di bx buffer:ptr byte, fmt:ptr byte, args:ptr
 
-;--- ltob(long n, char * s, int base);
-;--- convert long to string
-;--- outb is expected to be onto stack
-
-ltob PROC stdcall uses edi number:dword, outb:word, base:word
-
-	mov ch,0
-	movzx edi, base
-	mov eax, number
-	cmp di,-10
-	jne @F
-	mov di,10
-	and eax,eax
-	jns @F
-	neg eax
-	mov ch,'-'
-@@:
-	mov bx,outb
-	add bx,10
-	mov BYTE PTR ss:[bx],0
-	dec bx
-@@nextdigit:
-	xor edx, edx
-	div edi
-	add dl,'0'
-	cmp dl,'9'
-	jbe @F
-	add dl,7+20h
-@@:
-	mov ss:[bx],dl
-	dec bx
-	and eax, eax
-	jne @@nextdigit
-	cmp ch,0
-	je @F
-	mov ss:[bx],ch
-	dec bx
-@@:
-	inc bx
-	mov ax,bx
-	ret
-
-ltob ENDP
-
-;--- ds=dgroup, ss don't need to be dgroup
-
-printf PROC c uses si di bx fmt:ptr byte, args:VARARG
-
+local chars:word
 local size_:word
 local flag:byte
 local longarg:byte
 local fill:byte
 local szTmp[12]:byte
 
-	lea di,[fmt+2]
+	mov chars,0
+	mov di,[args]
 @@L335:
 	mov si,[fmt]
 nextchar:
@@ -69,7 +24,7 @@ nextchar:
 	call handle_char
 	jmp nextchar
 done:
-	xor ax,ax
+	mov ax, chars
 	ret
 
 formatitem:
@@ -200,25 +155,13 @@ output_string:	;display string at ds:si
 	retn
 
 handle_char:
-	mov dl,al
-	cmp al,10
-	jnz @F
-	mov dl,13
-	call @F
-	mov dl,10
-@@:
-if ASYNCDISPSTAT
-	push bx
-	xor bx, bx
-	mov ah, 0Eh
-	mov al, dl
-	int 10h
-	pop bx
-else
-	mov ah,2
-	int 21h
-endif
+	push di
+	mov di, buffer
+	stosb
+	mov buffer, di
+	inc chars
+	pop di
 	retn
 
-printf ENDP
+vsprintf ENDP
 

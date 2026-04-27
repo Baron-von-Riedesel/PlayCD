@@ -1,7 +1,7 @@
 
  1. About RippCD
 
-   RippCD reads CD data and writes it to a .wav file.
+   RippCD reads CDs in raw mode and writes the data to one/multiple file(s).
 
 
  2. Usage
@@ -11,7 +11,10 @@
   options are:
 
    -?                  display help
+   -c                  write a cue sheet
    -d:drvname[,unit]   call the CD-ROM driver directly, don't use MSCDEX/SHSUCDX
-   -q                  be quiet
-   -s                  write all tracks into a single file
+   -e                  stop on read errors
+   -o:prefix           set prefix for output filename(s)
+   -q                  suppress status displays
+   -s                  write all tracks into one file
 
