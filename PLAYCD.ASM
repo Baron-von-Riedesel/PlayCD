@@ -1,6 +1,6 @@
 
 ;*** playcd - plays track(s) of an audio CD.
-;*** Public Domain.
+;*** MIT License.
 ;*** main purpose of this program is to test the CD/DVD driver's
 ;*** support for Audio CDs.
 ;***

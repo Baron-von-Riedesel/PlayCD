@@ -1,6 +1,6 @@
 
 ;--- rip Audio and Mixed Mode CDs.
-;--- Public Domain, written by Andreas Grech.
+;--- MIT License, written by Andreas Grech.
 
 	.286
 	.model tiny
@@ -11,10 +11,11 @@
 	.386
 
 ?SECSIZE equ 2352	;raw mode sector size
-?DRIVER  equ 1		;1=support /D:xxx
+?DRIVER  equ 1		;1=support /D (call driver directly)
 ?CUE     equ 1		;1=support /C (write a .cue file)
+?NODATA  equ 1		;1=support /N (skip data tracks)
 
-VERSION  textequ <"1.0">
+VERSION  textequ <"1.1">
 
 ;--- read buffer size - buffer must fit in 64 kB:
 ;--- 65536 / 2352 = max 27 sectors;
@@ -136,17 +137,20 @@ endm
 	.data
 
 OldInt15 dd 0	;old value of Int 15h
-wData    dw MAXTRKS shr 4 dup (0) ;track type bits
+wData    dw MAXTRKS shr 4 dup (0) ;track type bits (1 if data track)
+wDrive   dw 0	;CD drive # if MSCDEX/SHSUCDX is used
 
-bVerbose db 1	;0=/q option active
-bHelp   db 0	;1=/? option active
 bExit   db 0	;1=ESC pressed
-bSingle db 0	;1=single file mode
+bVerbose db 1	;/q 0=suppress status displays
+bHelp   db 0	;/? 1=display help, then exit
+bSingle db 0	;/s 1=single file mode
 if ?CUE
-bCue    db 0	;1=create cue sheet
+bCue    db 0	;/c 1=create cue sheet
 endif
-bData   db 0	;1=current track is data
-bError  db 0	;1=stop at cd read errors
+if ?NODATA
+bNoData db 0	;/n 1=skip data tracks
+endif
+bError  db 0	;/e 1=stop at cd read errors
 cntData db 0	;# of data tracks written
 if ?DRIVER
 drvname db 8 dup (' '),0
@@ -155,11 +159,7 @@ bUnit   db 0
 drvstr  dd 0
 drvint  dd 0
 endif
-
 	align word
-
-wDrive dw 0		; CD drive #
-pFN    dw offset szDefFNm
 req03   cmd03 <>	;ioctl
 req80   cmd80 <>	;read long
 
@@ -170,11 +170,16 @@ szHelp label byte
 	db "Usage: ",PGMNAME," [options] [track# ...]",lf
 	db " options:",lf
 	db " -? : this help",lf
+if ?CUE
 	db " -c : write cue sheet",lf
+endif
 if ?DRIVER
 	db " -d:drvname[,unit] : call optical driver directly",lf
 endif
 	db " -e : stop at read errors",lf
+if ?NODATA
+	db " -n : skip data tracks",lf
+endif
 	db " -o:prefix : set prefix for output filename(s)",lf
 	db " -q : no status displays",lf
 	db " -s : write all tracks in one file",lf
@@ -525,7 +530,10 @@ strcpy proc stdcall uses si di pDst:ptr, pSrc:ptr
 	ret
 strcpy endp
 
-CreateFile proc stdcall uses bx si di pPrefix:ptr, trackno:byte
+;--- create wave or binary file
+;--- out: NC if ok, AX=handle
+
+CreateFile proc stdcall uses bx si di pPrefix:ptr, trackno:byte, bIsData:byte
 
 local szFN[256]:byte
 
@@ -538,7 +546,7 @@ local szFN[256]:byte
 		invoke itoa, di, trackno
 		mov di, ax
 	.endif
-	.if bData
+	.if bIsData
 		mov si, CStr(".bin")
     .else
 		mov si, CStr(".wav")
@@ -561,7 +569,7 @@ local szFN[256]:byte
 		jc error1
 	.endif
 @@:
-	.if !bData
+	.if !bIsData
 		mov bx, ax
 		mov dx, sizeof RIFFHDR + sizeof WAVEFMT + sizeof RIFFCHKHDR
 		mov cx, 0
@@ -576,9 +584,9 @@ error1:
 	ret
 CreateFile endp
 
-CloseFile proc stdcall uses bx si hFile:word, priffhdr:ptr, pwavefmt:ptr, pdatahdr:ptr
+CloseFile proc stdcall uses bx si hFile:word, priffhdr:ptr, pwavefmt:ptr, pdatahdr:ptr, bIsData:byte
 
-	.if !bData
+	.if !bIsData
 		mov bx, hFile
 		mov cx, 0
 		mov dx, 0
@@ -652,9 +660,28 @@ sprintf proc c pBuffer:ptr, pFmt:ptr, args:vararg
 
 sprintf endp
 
+;--- if a single file is written, check if any data track will be written
+;--- out: AL=0 if no, else AL=1
+
+AnyDataTrk proc stdcall uses si cnttrk:byte, trks:ptr, first:byte
+	movzx cx, cnttrk
+	mov si, trks
+	mov ah, 0
+nexttrk:
+	lodsb
+	sub al, first
+	bt wData, ax
+	mov al, 1
+	jc exit
+	loop nexttrk
+	xor al,al
+exit:
+	ret
+AnyDataTrk endp
+
 ;--- track# in cue sheet must start with 1 and be consecutive
 
-writecue proc stdcall uses bx si di tracks:byte, pTracks:ptr, pSectors:ptr
+writecue proc stdcall uses bx si di pFN:ptr, tracks:byte, pTracks:ptr, pSectors:ptr
 
 local rb:REDBOOK
 local pExt:word
@@ -704,6 +731,11 @@ local szFN[256]:byte
 	mov curTrk, 1
 	.while tracks
 		lodsb
+if ?NODATA
+		.if bNoData && al == -1
+			jmp skiptrk
+		.endif
+endif
 		push si
 		lea si, szFN
 		.if !bSingle
@@ -712,6 +744,8 @@ local szFN[256]:byte
 			pop ax
 		.endif
 		.if al == -1
+			cmp bNoData, 1
+			jz skiptrk
 			mov dx, CStr("MODE1/2352")
 		.else
 			mov dx, CStr("AUDIO")
@@ -730,6 +764,7 @@ local szFN[256]:byte
 		call writeline
 		pop si
 		inc curTrk
+skiptrk:
 		add di, sizeof dword
 		dec tracks
 	.endw
@@ -796,7 +831,9 @@ local cnttrk:byte
 local currtrk:byte
 local first:byte
 local last:byte
+local bIsData:byte
 local hFile:word
+local pFN:word
 local leadout:REDBOOK
 local start:REDBOOK
 local trks[MAXTRKS]:byte
@@ -806,6 +843,7 @@ local wavehdr:WAVEHDR
 	mov track,0
 	mov cnttrk,0
 	mov hFile, -1
+	mov pFN, offset szDefFNm
 
 ;--- install keyboard check
 
@@ -856,6 +894,10 @@ local wavehdr:WAVEHDR
 if ?CUE
 			.elseif ah == 'c'
 				mov bCue, 1
+endif
+if ?NODATA
+			.elseif ah == 'n'
+				mov bNoData, 1
 endif
 			.elseif ah == 'e'
 				mov bError, 1
@@ -946,7 +988,6 @@ skipcdrchk:
 	mov word ptr req80.address+2, ax
 
 ;--- get volume size info (# of sectors);
-;--- also, get TOC info ( first track, last track) in AL/AH
 
 	invoke getvolsize
 	.if !CARRY?
@@ -957,6 +998,8 @@ skipcdrchk:
 	.else
 ;		mov dwSectors, 80*60*75
 	.endif
+
+;--- get TOC info ( first track, last track) in AL/AH
 
 	invoke getdiskinfo
 	.if !CARRY? && ah >= al
@@ -982,7 +1025,7 @@ skipcdrchk:
 	.else
 		mov first, 1
 		mov last, 1
-		mov leadout, 795974h
+		mov leadout, 795900h
 	.endif
 
 ;--- get TOC infos for all tracks
@@ -1027,7 +1070,6 @@ skipcdrchk:
 		mov cnttrk, al
 	.endif
 
-
 	call gettimer
 	mov dwTimer, eax
 
@@ -1038,7 +1080,7 @@ skipcdrchk:
 		mov eax, req80.stasecs
 		.if eax >= dwSectors
 			.if bSingle == 0 && hFile != -1
-				invoke CloseFile, hFile, addr wavehdr.rh, addr wavehdr.wf, addr wavehdr.rch
+				invoke CloseFile, hFile, addr wavehdr.rh, addr wavehdr.wf, addr wavehdr.rch, bIsData
 				mov hFile, -1
 			.endif
 			.if bx
@@ -1060,25 +1102,22 @@ skipcdrchk:
 					invoke printf, CStr("IOCTL track info(%u): start=%lu end=%lu",lf),
 						byte ptr [si-1], req80.stasecs, dwSectors
 				.endif
+				mov bIsData, 0
 				shr di, 2
 				bt wData, di
 				.if CARRY?
 					.if bVerbose
 						invoke printf, CStr("IOCTL track info(%u): data track",lf), byte ptr [si-1]
 					.endif
-					mov bData, 1
 					mov byte ptr [si-1],-1
-					inc cntData
-if ?CUE
-					.if !bCue
-endif
+					mov bIsData, 1
+if ?NODATA
+					.if bNoData
 						mov dwSectors, 0
 						.continue
-if ?CUE
 					.endif
 endif
-				.else
-					mov bData, 0
+					inc cntData
 				.endif
 			.else
 				.break
@@ -1100,10 +1139,12 @@ endif
 		.endif
 
 		.if hFile == -1
-			invoke CreateFile, pFN, currtrk
-			.if ax == -1
-				jmp exit
+			mov al, bIsData
+			.if bSingle && !bNoData
+				invoke AnyDataTrk, cnttrk, addr trks, first
 			.endif
+			invoke CreateFile, pFN, currtrk, al
+			jc exit
 			mov hFile, ax
 			mov wavehdr.rh.chkId, "FFIR"
 			mov wavehdr.rh.chkSiz, sizeof WAVEHDR - 8	;filesize in bytes - 8
@@ -1130,15 +1171,15 @@ endif
 	.endif
 exit:
 	.if hFile != -1
-		.if bSingle && cntData ;option -s set and any data track found?
-			mov bData, 1       ;then ensure that no .wav header is written
+		.if bSingle && cntData ;option -s set and any data track written?
+			mov bIsData, 1     ;then ensure that no .wav header is written
 		.endif
-		invoke CloseFile, hFile, addr wavehdr.rh, addr wavehdr.wf, addr wavehdr.rch
+		invoke CloseFile, hFile, addr wavehdr.rh, addr wavehdr.wf, addr wavehdr.rch, bIsData
 		mov hFile, -1
 	.endif
 if ?CUE
 	.if bCue
-		invoke writecue, cnttrk, addr trks, addr szVar
+		invoke writecue, pFN, cnttrk, addr trks, addr szVar
 	.endif
 endif
 	push ds

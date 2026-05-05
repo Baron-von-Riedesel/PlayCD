@@ -14,7 +14,10 @@
    -c                  write a cue sheet
    -d:drvname[,unit]   call the CD-ROM driver directly, don't use MSCDEX/SHSUCDX
    -e                  stop on read errors
+   -n                  skip data tracks
    -o:prefix           set prefix for output filename(s)
    -q                  suppress status displays
    -s                  write all tracks into one file
 
+  For option -s: if at least one data track was detected, a .BIN file will
+  be written; else it's a .WAV file.

@@ -1,6 +1,6 @@
 
 ;--- Play Audio CD with SB Cxh/Bxh commands on SoundBlaster 16.
-;--- Public Domain, written by Andreas Grech.
+;--- MIT License, written by Andreas Grech.
 
 	.286
 	.model tiny
